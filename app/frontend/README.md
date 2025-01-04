@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Arch Network Demo Frontend
 
 This is the frontend application for the Arch Network demo. It provides a user interface for interacting with the Arch Network and viewing network statistics.
@@ -78,3 +79,13 @@ This will generate optimized static files in the `dist` directory.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+=======
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+>>>>>>> bfa6ed4 (initial commit)
