@@ -293,7 +293,6 @@ pub fn withdraw(
 
 pub fn get_user_deposit(accounts: &[AccountInfo]) -> Result<Deposits, ProgramError> {
     let account_iter = &mut accounts.iter();
-
     let user_account = next_account_info(account_iter)?;
 
     let user_deposit: Deposits = Deposits::try_from_slice(&user_account.data.borrow())
