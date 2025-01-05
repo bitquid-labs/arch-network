@@ -1,6 +1,12 @@
 use arch_program::{
-    account::AccountInfo, clock::Clock, entrypoint, msg, program::next_account_info,
-    program_error::ProgramError, pubkey::Pubkey,
+    account::AccountInfo,
+    clock::Clock,
+    entrypoint,
+    instruction::{self, Instruction},
+    msg,
+    program::{invoke, next_account_info},
+    program_error::ProgramError,
+    pubkey::Pubkey,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -60,6 +66,11 @@ pub struct Deposits {
 pub enum DepositStatus {
     Active,
     Withdrawn,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct TransferInput {
+    pub amount: u64,
 }
 
 entrypoint!(process_instruction);
@@ -160,6 +171,10 @@ pub fn deposit(
 
     let pool_account = next_account_info(account_iter)?;
     let user_account = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let user_token_account = next_account_info(account_iter)?;
+    let pool_token_account = next_account_info(account_iter)?;
+    let token_mint = next_account_info(account_iter)?;
 
     if pool_account.owner != program_id {
         return Err(ProgramError::IncorrectProgramId);
@@ -179,10 +194,40 @@ pub fn deposit(
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     );
 
+    let transfer_ix = TransferInput {
+        amount: deposit_amount,
+    };
+
+    let mut transfer_data = vec![3];
+    transfer_data.extend(borsh::to_vec(&transfer_ix).unwrap());
+
+    let transfer_accounts = &[
+        user_account.clone(),
+        token_mint.clone(),
+        user_token_account.clone(),
+        pool_token_account.clone(),
+    ];
+
+    let mut instruction_data = vec![];
+    instruction_data.extend_from_slice(token_program.key.as_ref());
+    instruction_data.extend_from_slice(token_mint.key.as_ref());
+    instruction_data.extend_from_slice(user_token_account.key.as_ref());
+    instruction_data.extend_from_slice(pool_token_account.key.as_ref());
+    instruction_data.push(3);
+    instruction_data.extend_from_slice(&deposit_amount.to_le_bytes());
+
+    let transfer_instruction = Instruction::from_slice(&instruction_data);
+
+    invoke(&transfer_instruction, transfer_accounts)?;
+
     let mut pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
-    let user_deposit: Option<Deposits> = None;
+    let user_deposit: Option<Deposits> = match Deposits::try_from_slice(&user_account.data.borrow())
+    {
+        Ok(deposit) => Some(deposit),
+        Err(_) => None,
+    };
     let apy = pool.apy;
     let days_in_year = 365;
     let daily_payout = (deposit_amount * apy / 100) / days_in_year;
@@ -240,6 +285,10 @@ pub fn withdraw(
 
     let pool_account = next_account_info(account_iter)?;
     let user_account = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    let pool_token_account = next_account_info(account_iter)?;
+    let user_token_account = next_account_info(account_iter)?;
+    let token_mint = next_account_info(account_iter)?;
 
     if pool_account.owner != program_id {
         return Err(ProgramError::IncorrectProgramId);
@@ -258,11 +307,43 @@ pub fn withdraw(
         return Err(ProgramError::InvalidAccountData); // No deposit found
     }
 
+    let clock = Clock::default();
+    let current_time = clock.unix_timestamp as u64;
+    if current_time < user_deposit.start_date + pool.min_period {
+        return Err(ProgramError::Custom(1));
+    }
+
     if instruction_data.len() < 8 {
         return Err(ProgramError::InvalidInstructionData);
     }
 
     let withdraw_amount = user_deposit.deposited_amount;
+    let transfer_ix = TransferInput {
+        amount: withdraw_amount,
+    };
+
+    let mut transfer_data = vec![3];
+    transfer_data.extend(borsh::to_vec(&transfer_ix).unwrap());
+
+    let transfer_accounts = &[
+        pool_account.clone(),
+        token_mint.clone(),
+        pool_token_account.clone(),
+        user_token_account.clone(),
+    ];
+
+    let mut instruction_data = vec![];
+    instruction_data.extend_from_slice(token_program.key.as_ref());
+    instruction_data.extend_from_slice(pool_token_account.key.as_ref());
+    instruction_data.extend_from_slice(pool_account.key.as_ref());
+    instruction_data.extend_from_slice(user_token_account.key.as_ref());
+    instruction_data.push(3);
+    instruction_data.extend_from_slice(&withdraw_amount.to_le_bytes());
+
+    let transfer_instruction = Instruction::from_slice(&instruction_data);
+
+    invoke(&transfer_instruction, transfer_accounts)?;
+
     user_deposit.deposited_amount = 0;
     user_deposit.status = DepositStatus::Withdrawn;
 
