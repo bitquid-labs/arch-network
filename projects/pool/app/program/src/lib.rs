@@ -2,7 +2,7 @@ use arch_program::{
     account::AccountInfo,
     clock::Clock,
     entrypoint,
-    instruction::{self, Instruction},
+    instruction::Instruction,
     msg,
     program::{invoke, next_account_info},
     program_error::ProgramError,
@@ -73,8 +73,12 @@ pub struct TransferInput {
     pub amount: u64,
 }
 
-entrypoint!(process_instruction);
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub struct PoolList {
+    pub pools: Vec<Pubkey>,
+}
 
+entrypoint!(process_instruction);
 fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -101,6 +105,12 @@ pub fn create_pool(
 
     let pool_account = next_account_info(account_iter)?;
     let owner_account = next_account_info(account_iter)?;
+    let pool_list_account = next_account_info(account_iter)?;
+
+    let mut pool_list: PoolList = match PoolList::try_from_slice(&pool_list_account.data.borrow()) {
+        Ok(list) => list,
+        Err(_) => PoolList { pools: Vec::new() },
+    };
 
     if pool_account.owner != program_id {
         return Err(ProgramError::IncorrectProgramId);
@@ -155,6 +165,11 @@ pub fn create_pool(
         asset_type,
     };
 
+    pool_list.pools.push(*pool_account.key);
+
+    pool_list
+        .serialize(&mut &mut pool_list_account.data.borrow_mut()[..])
+        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
     pool.serialize(&mut &mut pool_account.data.borrow_mut()[..])
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
@@ -400,4 +415,36 @@ pub fn get_pool(accounts: &[AccountInfo]) -> Result<Pool, ProgramError> {
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
     Ok(pool)
+}
+
+pub fn get_all_pools(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+) -> Result<Vec<Pool>, ProgramError> {
+    let account_iter = &mut accounts.iter();
+
+    let pool_list_account = next_account_info(account_iter)?;
+
+    if pool_list_account.owner != program_id {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+    let pool_list: PoolList = PoolList::try_from_slice(&pool_list_account.data.borrow())
+        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
+
+    let mut pools: Vec<Pool> = Vec::new();
+
+    for pool_pubkey in pool_list.pools {
+        let pool_account = accounts
+            .iter()
+            .find(|acc| acc.key == &pool_pubkey)
+            .ok_or(ProgramError::InvalidAccountData)?;
+
+        let pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
+            .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
+
+        pools.push(pool);
+    }
+
+    Ok(pools)
 }
