@@ -12,19 +12,53 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct Pool {
-    pub pool_pubkey: Pubkey,   // Unique identifier for the pool
-    pub pool_name: String,     // Optional, for human-readable naming
-    pub risk_type: RiskType,   // Custom enum for risk classification
-    pub apy: u64,              // Annual Percentage Yield
-    pub min_period: u64,       // Minimum coverage period
-    pub total_unit: u64,       // Total cover units
-    pub tvl: u64,              // Total value locked
-    pub base_value: u64,       // Base valuation of the pool
+    pub pool_id: u64, // Unique identifier for the pool
+    pub pool_pubkey: Pubkey,
+    pub pool_name: String,   // Optional, for human-readable naming
+    pub risk_type: RiskType, // Custom enum for risk classification
+    pub apy: u64,            // Annual Percentage Yield
+    pub min_period: u64,     // Minimum coverage period
+    pub total_unit: u64,     // Total cover units
+    pub tvl: u64,            // Total value locked
+    pub base_value: u64,     // Base valuation of the pool
+    pub investment_arm: u64,
     pub cover_units: u64,      // Units of cover provided
     pub tcp: u64,              // Total claimable pool
     pub is_active: bool,       // Status of the pool
     pub asset_pubkey: Pubkey,  // Pubkey for the associated asset
     pub asset_type: AssetType, // Enum for asset type (BTC, etc.)
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub struct PoolParam {
+    pub pool_name: String,
+    pub risk_type: u8,
+    pub apy: u64, // Annual Percentage Yield
+    pub min_period: u64,
+    pub asset_pubkey: Pubkey, // Pubkey for the associated asset
+    pub asset_type: u8,
+    pub investment_arm: u64,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct TransferInput {
+    pub amount: u64,
+}
+impl TransferInput {
+    pub fn new(amount: u64) -> Self {
+        TransferInput { amount }
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, PartialEq, Eq)]
+pub struct DepositParam {
+    pool_id: u64,
+    amount: u64,
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, PartialEq, Eq)]
+pub struct QueryParam {
+    pool_id: u64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, PartialEq, Eq)]
@@ -52,8 +86,20 @@ pub enum RiskType {
     High,
 }
 
-#[derive(BorshSerialize, BorshDeserialize, Debug)]
+impl RiskType {
+    pub fn from_u8(value: u8) -> Result<Self, ProgramError> {
+        match value {
+            0 => Ok(RiskType::Low),
+            1 => Ok(RiskType::Medium),
+            2 => Ok(RiskType::High),
+            _ => Err(ProgramError::InvalidInstructionData),
+        }
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub struct Deposits {
+    pub pool_id: u64,
     pub user_pubkey: Pubkey,
     pub pool_pubkey: Pubkey,
     pub deposited_amount: u64,
@@ -62,20 +108,22 @@ pub struct Deposits {
     pub start_date: u64,
 }
 
-#[derive(BorshSerialize, BorshDeserialize, Debug)]
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub enum DepositStatus {
     Active,
     Withdrawn,
 }
 
-#[derive(BorshSerialize, BorshDeserialize)]
-pub struct TransferInput {
-    pub amount: u64,
-}
-
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct PoolList {
-    pub pools: Vec<Pubkey>,
+    pub pools: Vec<u64>,
+    pub pool_id_to_pubkey: Vec<(u64, Pubkey)>,
+    pub admin_list: Vec<Pubkey>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct UserDepositList {
+    pub deposits: Vec<Deposits>,
 }
 
 entrypoint!(process_instruction);
@@ -107,65 +155,58 @@ pub fn create_pool(
     let owner_account = next_account_info(account_iter)?;
     let pool_list_account = next_account_info(account_iter)?;
 
-    let mut pool_list: PoolList = match PoolList::try_from_slice(&pool_list_account.data.borrow()) {
+    let mut pool_list = match PoolList::try_from_slice(&pool_list_account.data.borrow()) {
         Ok(list) => list,
-        Err(_) => PoolList { pools: Vec::new() },
+        Err(_) => PoolList {
+            pools: Vec::new(),
+            pool_id_to_pubkey: Vec::new(),
+            admin_list: vec![],
+        },
     };
 
-    if pool_account.owner != program_id {
-        return Err(ProgramError::IncorrectProgramId);
+    let pool_param = match PoolParam::try_from_slice(instruction_data) {
+        Ok(list) => list,
+        Err(_) => return Err(ProgramError::InvalidInstructionData),
+    };
+
+    // if pool_account.owner != program_id {
+    //     return Err(ProgramError::IncorrectProgramId);
+    // }
+
+    if !pool_list.admin_list.contains(owner_account.key) {
+        return Err(ProgramError::MissingRequiredSignature);
     }
 
     if !owner_account.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
 
-    if instruction_data.len() < 16 {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-
-    let pool_name_len = instruction_data[0] as usize;
-    if instruction_data.len() < 25 + pool_name_len {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-
-    let pool_name = String::from_utf8(instruction_data[1..1 + pool_name_len].to_vec())
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
-
-    let asset_type = AssetType::from_u8(instruction_data[1 + pool_name_len])?;
-    let apy = u64::from_le_bytes(
-        instruction_data[2 + pool_name_len..10 + pool_name_len]
-            .try_into()
-            .map_err(|_| ProgramError::InvalidInstructionData)?,
-    );
-    let min_period = u64::from_le_bytes(
-        instruction_data[10 + pool_name_len..18 + pool_name_len]
-            .try_into()
-            .map_err(|_| ProgramError::InvalidInstructionData)?,
-    );
-    let base_value = u64::from_le_bytes(
-        instruction_data[18 + pool_name_len..26 + pool_name_len]
-            .try_into()
-            .map_err(|_| ProgramError::InvalidInstructionData)?,
-    );
+    let asset_type = AssetType::from_u8(pool_param.asset_type)?;
+    let risk_type = RiskType::from_u8(pool_param.risk_type)?;
+    let pool_id = pool_list.pools.len() as u64 + 1;
 
     let pool = Pool {
+        pool_id,
         pool_pubkey: *pool_account.key,
-        pool_name,
-        risk_type: RiskType::Low,
-        apy,
-        min_period,
+        pool_name: pool_param.pool_name,
+        risk_type,
+        apy: pool_param.apy,
+        min_period: pool_param.min_period,
         total_unit: 0,
+        investment_arm: pool_param.investment_arm,
         tvl: 0,
-        base_value,
+        base_value: 0,
         cover_units: 0,
         tcp: 0,
         is_active: true,
-        asset_pubkey: *pool_account.key,
+        asset_pubkey: pool_param.asset_pubkey,
         asset_type,
     };
 
-    pool_list.pools.push(*pool_account.key);
+    pool_list.pools.push(pool_id);
+    pool_list
+        .pool_id_to_pubkey
+        .push((pool_id, *pool_account.key));
 
     pool_list
         .serialize(&mut &mut pool_list_account.data.borrow_mut()[..])
@@ -173,7 +214,12 @@ pub fn create_pool(
     pool.serialize(&mut &mut pool_account.data.borrow_mut()[..])
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
-    msg!("Pool created successfully: {:?}", pool);
+    msg!(
+        "Pool {:?} with ID {:?} created successfully: {:?}",
+        pool_account.key,
+        pool_id,
+        pool
+    );
     Ok(())
 }
 
@@ -185,6 +231,7 @@ pub fn deposit(
     let account_iter = &mut accounts.iter();
 
     let pool_account = next_account_info(account_iter)?;
+    let pool_list_account = next_account_info(account_iter)?;
     let user_account = next_account_info(account_iter)?;
     let token_program = next_account_info(account_iter)?;
     let user_token_account = next_account_info(account_iter)?;
@@ -195,6 +242,18 @@ pub fn deposit(
         return Err(ProgramError::IncorrectProgramId);
     }
 
+    let deposit_param = match DepositParam::try_from_slice(instruction_data) {
+        Ok(list) => list,
+        Err(_) => return Err(ProgramError::InvalidInstructionData),
+    };
+
+    let mut user_deposit_list = match UserDepositList::try_from_slice(&user_account.data.borrow()) {
+        Ok(list) => list,
+        Err(_) => UserDepositList {
+            deposits: Vec::new(),
+        },
+    };
+
     if !user_account.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
@@ -203,18 +262,9 @@ pub fn deposit(
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    let deposit_amount = u64::from_le_bytes(
-        instruction_data[..8]
-            .try_into()
-            .map_err(|_| ProgramError::InvalidInstructionData)?,
-    );
-
-    let transfer_ix = TransferInput {
-        amount: deposit_amount,
-    };
-
-    let mut transfer_data = vec![3];
-    transfer_data.extend(borsh::to_vec(&transfer_ix).unwrap());
+    let pool_list = PoolList::try_from_slice(&pool_list_account.data.borrow())
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+    let deposit_amount = deposit_param.amount;
 
     let transfer_accounts = &[
         user_account.clone(),
@@ -223,13 +273,35 @@ pub fn deposit(
         pool_token_account.clone(),
     ];
 
+    let pool_pubkey = pool_list
+        .pool_id_to_pubkey
+        .iter()
+        .find(|(id, _)| *id == deposit_param.pool_id)
+        .map(|(_, pubkey)| pubkey);
+
+    let pool = if let Some(pool_pubkey) = pool_pubkey {
+        let pool_account = account_iter
+            .find(|account| account.key == pool_pubkey)
+            .ok_or(ProgramError::InvalidAccountData)?;
+
+        let pool = Pool::try_from_slice(&pool_account.data.borrow())
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+
+        pool
+    } else {
+        return Err(ProgramError::InvalidArgument);
+    };
+
+    let transfer_ix = TransferInput::new(deposit_amount);
+
     let mut instruction_data = vec![];
     instruction_data.extend_from_slice(token_program.key.as_ref());
-    instruction_data.extend_from_slice(token_mint.key.as_ref());
+    instruction_data.extend_from_slice(pool.asset_pubkey.as_ref());
     instruction_data.extend_from_slice(user_token_account.key.as_ref());
     instruction_data.extend_from_slice(pool_token_account.key.as_ref());
+    instruction_data.extend_from_slice(program_id.as_ref());
     instruction_data.push(3);
-    instruction_data.extend_from_slice(&deposit_amount.to_le_bytes());
+    instruction_data.extend_from_slice(&borsh::to_vec(&transfer_ix).unwrap());
 
     let transfer_instruction = Instruction::from_slice(&instruction_data);
 
@@ -238,37 +310,31 @@ pub fn deposit(
     let mut pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
-    let user_deposit: Option<Deposits> = match Deposits::try_from_slice(&user_account.data.borrow())
-    {
-        Ok(deposit) => Some(deposit),
-        Err(_) => None,
-    };
     let apy = pool.apy;
     let days_in_year = 365;
     let daily_payout = (deposit_amount * apy / 100) / days_in_year;
-
-    let updated_deposit = if let Some(mut existing) = user_deposit {
-        existing.deposited_amount = existing
+    if let Some(deposit) = user_deposit_list
+        .deposits
+        .iter_mut()
+        .find(|d| d.pool_id == deposit_param.pool_id)
+    {
+        deposit.deposited_amount = deposit
             .deposited_amount
             .checked_add(deposit_amount)
             .ok_or(ProgramError::InvalidAccountData)?;
-        existing.daily_payout = (existing.deposited_amount * apy / 100) / days_in_year;
-        existing.start_date = Clock::default().unix_timestamp as u64;
-        existing
+        deposit.daily_payout = (deposit.deposited_amount * apy / 100) / days_in_year;
+        deposit.start_date = Clock::default().unix_timestamp as u64;
     } else {
-        Deposits {
+        user_deposit_list.deposits.push(Deposits {
+            pool_id: deposit_param.pool_id,
             user_pubkey: *user_account.key,
             pool_pubkey: *pool_account.key,
             deposited_amount: deposit_amount,
             status: DepositStatus::Active,
             daily_payout,
             start_date: Clock::default().unix_timestamp as u64,
-        }
-    };
-
-    updated_deposit
-        .serialize(&mut &mut user_account.data.borrow_mut()[..])
-        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
+        });
+    }
 
     pool.tvl = pool
         .tvl
@@ -313,14 +379,29 @@ pub fn withdraw(
         return Err(ProgramError::MissingRequiredSignature);
     }
 
+    let withdraw_param = match QueryParam::try_from_slice(instruction_data) {
+        Ok(list) => list,
+        Err(_) => return Err(ProgramError::InvalidInstructionData),
+    };
     let mut pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
-    let mut user_deposit: Deposits = Deposits::try_from_slice(&user_account.data.borrow())
-        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
-    if user_deposit.deposited_amount == 0 {
-        return Err(ProgramError::InvalidAccountData); // No deposit found
-    }
+    let mut user_deposit_list = match UserDepositList::try_from_slice(&user_account.data.borrow()) {
+        Ok(list) => list,
+        Err(_) => UserDepositList {
+            deposits: Vec::new(),
+        },
+    };
+
+    let user_deposit = if let Some(deposit) = user_deposit_list
+        .deposits
+        .iter_mut()
+        .find(|d| d.pool_id == withdraw_param.pool_id)
+    {
+        deposit
+    } else {
+        return Err(ProgramError::InvalidAccountData);
+    };
 
     let clock = Clock::default();
     let current_time = clock.unix_timestamp as u64;
@@ -347,13 +428,16 @@ pub fn withdraw(
         user_token_account.clone(),
     ];
 
+    let transfer_ix = TransferInput::new(withdraw_amount);
+
     let mut instruction_data = vec![];
     instruction_data.extend_from_slice(token_program.key.as_ref());
-    instruction_data.extend_from_slice(pool_token_account.key.as_ref());
+    instruction_data.extend_from_slice(pool.asset_pubkey.as_ref());
     instruction_data.extend_from_slice(pool_account.key.as_ref());
     instruction_data.extend_from_slice(user_token_account.key.as_ref());
+    instruction_data.extend_from_slice(program_id.as_ref());
     instruction_data.push(3);
-    instruction_data.extend_from_slice(&withdraw_amount.to_le_bytes());
+    instruction_data.extend_from_slice(&borsh::to_vec(&transfer_ix).unwrap());
 
     let transfer_instruction = Instruction::from_slice(&instruction_data);
 
@@ -387,34 +471,36 @@ pub fn withdraw(
     Ok(())
 }
 
-pub fn get_user_deposit(accounts: &[AccountInfo]) -> Result<Deposits, ProgramError> {
+pub fn get_user_deposit(
+    accounts: &[AccountInfo],
+    instruction_data: &[u8],
+) -> Result<Deposits, ProgramError> {
     let account_iter = &mut accounts.iter();
     let user_account = next_account_info(account_iter)?;
 
-    let user_deposit: Deposits = Deposits::try_from_slice(&user_account.data.borrow())
-        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
+    let query_param = match QueryParam::try_from_slice(instruction_data) {
+        Ok(list) => list,
+        Err(_) => return Err(ProgramError::InvalidInstructionData),
+    };
 
-    Ok(user_deposit)
-}
+    let user_deposit_list = match UserDepositList::try_from_slice(&user_account.data.borrow()) {
+        Ok(list) => list,
+        Err(_) => UserDepositList {
+            deposits: Vec::new(),
+        },
+    };
 
-pub fn get_pool_tvl(accounts: &[AccountInfo]) -> Result<u64, ProgramError> {
-    let account_iter = &mut accounts.iter();
+    let user_deposit = if let Some(deposit) = user_deposit_list
+        .deposits
+        .iter()
+        .find(|d| d.pool_id == query_param.pool_id)
+    {
+        deposit
+    } else {
+        return Err(ProgramError::InvalidAccountData);
+    };
 
-    let pool_account = next_account_info(account_iter)?;
-    let pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
-        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
-
-    Ok(pool.tvl)
-}
-
-pub fn get_pool(accounts: &[AccountInfo]) -> Result<Pool, ProgramError> {
-    let account_iter = &mut accounts.iter();
-
-    let pool_account = next_account_info(account_iter)?;
-    let pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
-        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
-
-    Ok(pool)
+    Ok(user_deposit.clone())
 }
 
 pub fn get_all_pools(
@@ -434,17 +520,79 @@ pub fn get_all_pools(
 
     let mut pools: Vec<Pool> = Vec::new();
 
-    for pool_pubkey in pool_list.pools {
-        let pool_account = accounts
+    for pool_id in pool_list.pools {
+        let pool_pubkey = pool_list
+            .pool_id_to_pubkey
             .iter()
-            .find(|acc| acc.key == &pool_pubkey)
-            .ok_or(ProgramError::InvalidAccountData)?;
+            .find(|(id, _)| *id == pool_id)
+            .map(|(_, pubkey)| pubkey);
+        if let Some(pool_pubkey) = pool_pubkey {
+            let pool_account = accounts
+                .iter()
+                .find(|acc| acc.key == pool_pubkey)
+                .ok_or(ProgramError::InvalidAccountData)?;
 
-        let pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
-            .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
+            let pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
+                .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
-        pools.push(pool);
+            pools.push(pool);
+        } else {
+            return Err(ProgramError::InvalidArgument);
+        }
     }
 
     Ok(pools)
+}
+
+pub fn get_pool_by_id(accounts: &[AccountInfo], pool_id: u64) -> Result<Pool, ProgramError> {
+    let account_iter = &mut accounts.iter();
+
+    let pool_list_account = next_account_info(account_iter)?;
+    let pool_list = PoolList::try_from_slice(&pool_list_account.data.borrow())
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    let pool_pubkey = pool_list
+        .pool_id_to_pubkey
+        .iter()
+        .find(|(id, _)| *id == pool_id)
+        .map(|(_, pubkey)| pubkey);
+
+    if let Some(pool_pubkey) = pool_pubkey {
+        let pool_account = account_iter
+            .find(|account| account.key == pool_pubkey)
+            .ok_or(ProgramError::InvalidAccountData)?;
+
+        let pool = Pool::try_from_slice(&pool_account.data.borrow())
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+
+        Ok(pool)
+    } else {
+        Err(ProgramError::InvalidArgument)
+    }
+}
+
+pub fn get_pool_tvl(accounts: &[AccountInfo], pool_id: u64) -> Result<u64, ProgramError> {
+    let account_iter = &mut accounts.iter();
+    let pool_list_account = next_account_info(account_iter)?;
+    let pool_list = PoolList::try_from_slice(&pool_list_account.data.borrow())
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    let pool_pubkey = pool_list
+        .pool_id_to_pubkey
+        .iter()
+        .find(|(id, _)| *id == pool_id)
+        .map(|(_, pubkey)| pubkey);
+
+    if let Some(pool_pubkey) = pool_pubkey {
+        let pool_account = account_iter
+            .find(|account| account.key == pool_pubkey)
+            .ok_or(ProgramError::InvalidAccountData)?;
+
+        let pool = Pool::try_from_slice(&pool_account.data.borrow())
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+
+        Ok(pool.tvl)
+    } else {
+        Err(ProgramError::InvalidArgument)
+    }
 }
