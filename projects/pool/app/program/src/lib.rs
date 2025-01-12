@@ -1,5 +1,5 @@
 use arch_program::{
-    account::AccountInfo,
+    account::{AccountInfo, AccountMeta},
     clock::Clock,
     entrypoint,
     instruction::Instruction,
@@ -137,9 +137,9 @@ fn process_instruction(
     }
 
     match instruction_data[0] {
-        0 => create_pool(program_id, accounts, instruction_data),
-        1 => deposit(program_id, accounts, instruction_data),
-        2 => withdraw(program_id, accounts, instruction_data),
+        0 => create_pool(program_id, accounts, &instruction_data[1..]),
+        1 => deposit(program_id, accounts, &instruction_data[1..]),
+        2 => withdraw(program_id, accounts, &instruction_data[1..]),
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
@@ -292,20 +292,42 @@ pub fn deposit(
         return Err(ProgramError::InvalidArgument);
     };
 
-    let transfer_ix = TransferInput::new(deposit_amount);
+    let mut transfer_ix_data = vec![3];
+    transfer_ix_data.extend_from_slice(
+        &borsh::to_vec(&TransferInput {
+            amount: deposit_amount,
+        })
+        .unwrap(),
+    );
 
-    let mut instruction_data = vec![];
-    instruction_data.extend_from_slice(token_program.key.as_ref());
-    instruction_data.extend_from_slice(pool.asset_pubkey.as_ref());
-    instruction_data.extend_from_slice(user_token_account.key.as_ref());
-    instruction_data.extend_from_slice(pool_token_account.key.as_ref());
-    instruction_data.extend_from_slice(program_id.as_ref());
-    instruction_data.push(3);
-    instruction_data.extend_from_slice(&borsh::to_vec(&transfer_ix).unwrap());
+    let transfer_ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![
+            AccountMeta {
+                pubkey: *user_account.key,
+                is_signer: true,   // This account needs to sign the transaction
+                is_writable: true, // This account's data will be modified
+            },
+            AccountMeta {
+                pubkey: pool.asset_pubkey,
+                is_signer: false,   // Mint doesn't need to sign
+                is_writable: false, // Mint data won't be modified
+            },
+            AccountMeta {
+                pubkey: *user_token_account.key,
+                is_signer: false,  // Token account doesn't sign
+                is_writable: true, // Token account balance will change
+            },
+            AccountMeta {
+                pubkey: *pool_token_account.key,
+                is_signer: false,  // Pool token account doesn't sign
+                is_writable: true, // Pool token account balance will change
+            },
+        ],
+        data: transfer_ix_data,
+    };
 
-    let transfer_instruction = Instruction::from_slice(&instruction_data);
-
-    invoke(&transfer_instruction, transfer_accounts)?;
+    invoke(&transfer_ix, transfer_accounts)?;
 
     let mut pool: Pool = Pool::try_from_slice(&pool_account.data.borrow())
         .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
@@ -414,34 +436,54 @@ pub fn withdraw(
     }
 
     let withdraw_amount = user_deposit.deposited_amount;
-    let transfer_ix = TransferInput {
-        amount: withdraw_amount,
+    
+    // First create the instruction data for transfer
+    let mut transfer_ix_data = vec![3]; // Instruction discriminator for transfer
+    transfer_ix_data.extend_from_slice(
+        &borsh::to_vec(&TransferInput {
+            amount: withdraw_amount,
+        })
+        .unwrap(),
+    );
+
+    // Create the instruction with proper account metas
+    let transfer_ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![
+            AccountMeta {
+                pubkey: *pool_account.key,
+                is_signer: true,   // This account needs to sign the transaction
+                is_writable: true, // This account's data will be modified
+            },
+            AccountMeta {
+                pubkey: pool.asset_pubkey,
+                is_signer: false,   // Mint doesn't need to sign
+                is_writable: false, // Mint data won't be modified
+            },
+            AccountMeta {
+                pubkey: *pool_token_account.key,
+                is_signer: false,  // Token account doesn't sign
+                is_writable: true, // Token account balance will change
+            },
+            AccountMeta {
+                pubkey: *user_token_account.key,
+                is_signer: false,  // Pool token account doesn't sign
+                is_writable: true, // Pool token account balance will change
+            },
+        ],
+        data: transfer_ix_data,
     };
 
-    let mut transfer_data = vec![3];
-    transfer_data.extend(borsh::to_vec(&transfer_ix).unwrap());
-
-    let transfer_accounts = &[
-        pool_account.clone(),
-        token_mint.clone(),
-        pool_token_account.clone(),
-        user_token_account.clone(),
-    ];
-
-    let transfer_ix = TransferInput::new(withdraw_amount);
-
-    let mut instruction_data = vec![];
-    instruction_data.extend_from_slice(token_program.key.as_ref());
-    instruction_data.extend_from_slice(pool.asset_pubkey.as_ref());
-    instruction_data.extend_from_slice(pool_account.key.as_ref());
-    instruction_data.extend_from_slice(user_token_account.key.as_ref());
-    instruction_data.extend_from_slice(program_id.as_ref());
-    instruction_data.push(3);
-    instruction_data.extend_from_slice(&borsh::to_vec(&transfer_ix).unwrap());
-
-    let transfer_instruction = Instruction::from_slice(&instruction_data);
-
-    invoke(&transfer_instruction, transfer_accounts)?;
+    // Execute the transfer
+    invoke(
+        &transfer_ix,
+        &[
+            pool_account.clone(),
+            token_mint.clone(),
+            pool_token_account.clone(),
+            user_token_account.clone(),
+        ],
+    )?;
 
     user_deposit.deposited_amount = 0;
     user_deposit.status = DepositStatus::Withdrawn;
