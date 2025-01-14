@@ -140,6 +140,10 @@ fn process_instruction(
         0 => create_pool(program_id, accounts, &instruction_data[1..]),
         1 => deposit(program_id, accounts, &instruction_data[1..]),
         2 => withdraw(program_id, accounts, &instruction_data[1..]),
+        // 3 => get_user_deposit(accounts, &instruction_data[1..]),
+        // 4 => get_all_pools(program_id, accounts),
+        // 5 => get_pool_by_id(accounts, &instruction_data[1..]),
+        // 6 => get_pool_tvl(accounts, &instruction_data[1..])
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
@@ -436,7 +440,7 @@ pub fn withdraw(
     }
 
     let withdraw_amount = user_deposit.deposited_amount;
-    
+
     // First create the instruction data for transfer
     let mut transfer_ix_data = vec![3]; // Instruction discriminator for transfer
     transfer_ix_data.extend_from_slice(
@@ -586,8 +590,16 @@ pub fn get_all_pools(
     Ok(pools)
 }
 
-pub fn get_pool_by_id(accounts: &[AccountInfo], pool_id: u64) -> Result<Pool, ProgramError> {
+pub fn get_pool_by_id(
+    accounts: &[AccountInfo],
+    instruction_data: &[u8],
+) -> Result<Pool, ProgramError> {
     let account_iter = &mut accounts.iter();
+
+    let pool_id = match u64::try_from_slice(instruction_data) {
+        Ok(list) => list,
+        Err(_) => return Err(ProgramError::InvalidInstructionData),
+    };
 
     let pool_list_account = next_account_info(account_iter)?;
     let pool_list = PoolList::try_from_slice(&pool_list_account.data.borrow())
@@ -613,11 +625,19 @@ pub fn get_pool_by_id(accounts: &[AccountInfo], pool_id: u64) -> Result<Pool, Pr
     }
 }
 
-pub fn get_pool_tvl(accounts: &[AccountInfo], pool_id: u64) -> Result<u64, ProgramError> {
+pub fn get_pool_tvl(
+    accounts: &[AccountInfo],
+    instruction_data: &[u8],
+) -> Result<u64, ProgramError> {
     let account_iter = &mut accounts.iter();
     let pool_list_account = next_account_info(account_iter)?;
     let pool_list = PoolList::try_from_slice(&pool_list_account.data.borrow())
         .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    let pool_id = match u64::try_from_slice(instruction_data) {
+        Ok(list) => list,
+        Err(_) => return Err(ProgramError::InvalidInstructionData),
+    };
 
     let pool_pubkey = pool_list
         .pool_id_to_pubkey
