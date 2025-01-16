@@ -441,8 +441,11 @@ pub fn withdraw(
 
     let withdraw_amount = user_deposit.deposited_amount;
 
-    // First create the instruction data for transfer
-    let mut transfer_ix_data = vec![3]; // Instruction discriminator for transfer
+    if withdraw_amount > pool.tvl {
+        return Err(ProgramError::InsufficientFunds);
+    }
+
+    let mut transfer_ix_data = vec![3];
     transfer_ix_data.extend_from_slice(
         &borsh::to_vec(&TransferInput {
             amount: withdraw_amount,
@@ -450,29 +453,28 @@ pub fn withdraw(
         .unwrap(),
     );
 
-    // Create the instruction with proper account metas
     let transfer_ix = Instruction {
         program_id: *token_program.key,
         accounts: vec![
             AccountMeta {
                 pubkey: *pool_account.key,
-                is_signer: true,   // This account needs to sign the transaction
-                is_writable: true, // This account's data will be modified
+                is_signer: true,
+                is_writable: true,
             },
             AccountMeta {
                 pubkey: pool.asset_pubkey,
-                is_signer: false,   // Mint doesn't need to sign
-                is_writable: false, // Mint data won't be modified
+                is_signer: false,
+                is_writable: false,
             },
             AccountMeta {
                 pubkey: *pool_token_account.key,
-                is_signer: false,  // Token account doesn't sign
-                is_writable: true, // Token account balance will change
+                is_signer: false,
+                is_writable: true,
             },
             AccountMeta {
                 pubkey: *user_token_account.key,
-                is_signer: false,  // Pool token account doesn't sign
-                is_writable: true, // Pool token account balance will change
+                is_signer: false,
+                is_writable: true,
             },
         ],
         data: transfer_ix_data,
@@ -491,10 +493,6 @@ pub fn withdraw(
 
     user_deposit.deposited_amount = 0;
     user_deposit.status = DepositStatus::Withdrawn;
-
-    if withdraw_amount > pool.tvl {
-        return Err(ProgramError::InsufficientFunds);
-    }
 
     pool.tvl = pool
         .tvl
