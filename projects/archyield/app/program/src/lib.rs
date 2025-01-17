@@ -142,10 +142,10 @@ fn process_instruction(
         0 => create_pool(accounts, &instruction_data[1..]),
         1 => deposit(program_id, accounts, &instruction_data[1..]),
         2 => withdraw(program_id, accounts, &instruction_data[1..]),
-        // 3 => get_user_deposit(accounts, &instruction_data[1..]),
-        // 4 => get_all_pools(program_id, accounts),
-        // 5 => get_pool_by_id(accounts, &instruction_data[1..]),
-        // 6 => get_pool_tvl(accounts, &instruction_data[1..])
+        3 => get_user_deposit(accounts, &instruction_data[1..]),
+        4 => get_all_pools(program_id, accounts),
+        5 => get_pool_by_id(accounts, &instruction_data[1..]),
+        6 => get_pool_tvl(accounts, &instruction_data[1..]),
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
@@ -651,7 +651,7 @@ pub fn withdraw_rewards(
 pub fn get_user_deposit(
     accounts: &[AccountInfo],
     instruction_data: &[u8],
-) -> Result<Deposits, ProgramError> {
+) -> Result<(), ProgramError> {
     let account_iter = &mut accounts.iter();
     let user_account = next_account_info(account_iter)?;
 
@@ -677,13 +677,12 @@ pub fn get_user_deposit(
         return Err(ProgramError::InvalidAccountData);
     };
 
-    Ok(user_deposit.clone())
+    msg!("User Deposit: {:?}", user_deposit);
+
+    Ok(())
 }
 
-pub fn get_all_pools(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-) -> Result<Vec<Pool>, ProgramError> {
+pub fn get_all_pools(program_id: &Pubkey, accounts: &[AccountInfo]) -> Result<(), ProgramError> {
     let account_iter = &mut accounts.iter();
 
     let pool_list_account = next_account_info(account_iter)?;
@@ -718,13 +717,15 @@ pub fn get_all_pools(
         }
     }
 
-    Ok(pools)
+    msg!("Pools: {:?}", pools);
+
+    Ok(())
 }
 
 pub fn get_pool_by_id(
     accounts: &[AccountInfo],
     instruction_data: &[u8],
-) -> Result<Pool, ProgramError> {
+) -> Result<(), ProgramError> {
     let account_iter = &mut accounts.iter();
 
     let pool_id = match u64::try_from_slice(instruction_data) {
@@ -750,16 +751,14 @@ pub fn get_pool_by_id(
         let pool = Pool::try_from_slice(&pool_account.data.borrow())
             .map_err(|_| ProgramError::InvalidAccountData)?;
 
-        Ok(pool)
+        msg!("Pool: {:?}", pool);
+        Ok(())
     } else {
         Err(ProgramError::InvalidArgument)
     }
 }
 
-pub fn get_pool_tvl(
-    accounts: &[AccountInfo],
-    instruction_data: &[u8],
-) -> Result<u64, ProgramError> {
+pub fn get_pool_tvl(accounts: &[AccountInfo], instruction_data: &[u8]) -> Result<(), ProgramError> {
     let account_iter = &mut accounts.iter();
     let pool_list_account = next_account_info(account_iter)?;
     let pool_list = PoolList::try_from_slice(&pool_list_account.data.borrow())
@@ -784,7 +783,8 @@ pub fn get_pool_tvl(
         let pool = Pool::try_from_slice(&pool_account.data.borrow())
             .map_err(|_| ProgramError::InvalidAccountData)?;
 
-        Ok(pool.tvl)
+        msg!("Pool TVL: {}", pool.tvl);
+        Ok(())
     } else {
         Err(ProgramError::InvalidArgument)
     }
