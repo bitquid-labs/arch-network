@@ -11,6 +11,9 @@ pub struct User {
     pub last_spin_time: u64,
 }
 
+const SECONDS_IN_ONE_HOUR: u64 = 3600;
+const TEN_HOURS_IN_SECONDS: u64 = 10 * SECONDS_IN_ONE_HOUR;
+
 entrypoint!(process_instruction);
 fn process_instruction(
     program_id: &Pubkey,
@@ -48,8 +51,8 @@ pub fn create_user(
         },
     };
 
-    // pool.serialize(&mut &mut pool_account.data.borrow_mut()[..])
-    //     .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
+    user.serialize(&mut &mut user_account.data.borrow_mut()[..])
+        .map_err(|e| ProgramError::BorshIoError(e.to_string()))?;
 
     msg!("User profile created successfully: {:?}", user);
     Ok(())
@@ -73,16 +76,23 @@ pub fn start(
         user.spins = 10;
     }
 
+    // if user.spins > 10 {
+    //     user.spins = 10;
+    // }
+
     let clock = Clock::default();
-    let ten_hrs = clock.unix_timestamp as u64;
-    let one_hr = clock.unix_timestamp as u64;
+    let current_time = clock.unix_timestamp as u64;
 
     if user.last_spin_time > 0 {
-        let diff = clock.unix_timestamp as u64 - user.last_spin_time;
-        if diff > ten_hrs {
+        let diff = current_time - user.last_spin_time;
+
+        if diff > TEN_HOURS_IN_SECONDS {
             user.spins = 10;
         } else {
-            user.spins = diff / one_hr;
+            user.spins += time_diff / ONE_HOUR;
+            if user.spins > 10 {
+                user.spins = 10;
+            }
         }
     }
 
