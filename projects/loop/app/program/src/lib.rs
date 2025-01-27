@@ -1,11 +1,6 @@
 use arch_program::{
-    account::AccountInfo,
-    entrypoint,
-    instruction::Instruction,
-    msg,
-    program::next_account_info,
-    program_error::ProgramError,
-    pubkey::Pubkey,
+    account::AccountInfo, entrypoint, instruction::Instruction, msg, program::next_account_info,
+    program_error::ProgramError, pubkey::Pubkey,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -21,6 +16,4 @@ pub fn process_instruction(
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
-pub struct AppInstruction {
-    // Define your instruction structure here
-}
+pub struct AppInstruction {}
